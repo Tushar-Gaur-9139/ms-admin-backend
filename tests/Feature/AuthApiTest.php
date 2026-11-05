@@ -1,6 +1,8 @@
 <?php
 
+use App\Models\Role;
 use App\Models\User;
+use App\Models\UserActivityLog;
 use Illuminate\Auth\Notifications\ResetPassword;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Auth;
@@ -91,7 +93,7 @@ it('lets administrators create dynamic roles by name and assign them to users', 
         ->assertJsonPath('role.created_by', 'Store Administrator');
 
     expect($roleResponse->json('role.created_at'))->not->toBeNull();
-    expect($roleResponse->json('role.permissions'))->toBe(array_keys(\App\Models\Role::PERMISSIONS));
+    expect($roleResponse->json('role.permissions'))->toBe(array_keys(Role::PERMISSIONS));
 
     $this->putJson('/api/v1/admin/roles/warehouse_lead', [
         'name' => 'Warehouse Manager',
@@ -133,7 +135,7 @@ it('allows administrators to delete unused roles but keeps roles with assigned u
 
 it('allows administrators to create, edit, block, unblock, and delete user accounts', function (): void {
     User::factory()->create([
-    'name' => 'Store Administrator',
+        'name' => 'Store Administrator',
         'email' => 'admin@example.com',
         'password' => 'correct-password',
         'role' => 'admin',
@@ -194,7 +196,7 @@ it('allows administrators to create, edit, block, unblock, and delete user accou
         'subject_email' => 'updated.staff@example.com',
         'subject_user_id' => null,
     ]);
-    expect(\App\Models\UserActivityLog::query()->pluck('changes')->toJson())->not->toContain('temporary-password');
+    expect(UserActivityLog::query()->pluck('changes')->toJson())->not->toContain('temporary-password');
 });
 
 it('denies blocked staff accounts access to the admin panel', function (): void {
