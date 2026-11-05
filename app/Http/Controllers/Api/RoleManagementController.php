@@ -10,7 +10,6 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\ValidationException;
 use Illuminate\Support\Str;
-use Illuminate\Validation\Rule;
 
 class RoleManagementController extends Controller
 {
@@ -52,7 +51,7 @@ class RoleManagementController extends Controller
         $role = Role::create([
             'name' => $name,
             'slug' => $slug,
-            'permissions' => $this->normalizePermissions($validated['permissions']),
+            'permissions' => array_keys(Role::PERMISSIONS),
             'is_system' => false,
             'created_by_user_id' => $actor->id,
         ]);
@@ -72,7 +71,6 @@ class RoleManagementController extends Controller
         $validated = $request->validate($this->roleRules());
         $role->update([
             'name' => trim($validated['name']),
-            'permissions' => $this->normalizePermissions($validated['permissions']),
         ]);
 
         $role->load('createdBy')->loadCount('users');
@@ -101,7 +99,7 @@ class RoleManagementController extends Controller
         abort_unless(
             $user instanceof User && $user->canManageRoles(),
             403,
-            'Only administrators can manage roles and user access.',
+            'Only an administrator or super administrator can create and manage roles.',
         );
 
         return $user;
@@ -111,13 +109,6 @@ class RoleManagementController extends Controller
     {
         return [
             'name' => ['required', 'string', 'min:2', 'max:80'],
-            'permissions' => ['present', 'array', 'max:'.count(Role::PERMISSIONS)],
-            'permissions.*' => ['required', 'string', Rule::in(array_keys(Role::PERMISSIONS))],
         ];
-    }
-
-    private function normalizePermissions(array $permissions): array
-    {
-        return array_values(array_unique(['overview.view', ...$permissions]));
     }
 }

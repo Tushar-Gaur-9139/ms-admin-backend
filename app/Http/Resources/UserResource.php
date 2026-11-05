@@ -25,6 +25,9 @@ class UserResource extends JsonResource
             'is_active' => $this->is_active,
             'created_by' => $this->createdBy?->name ?? 'Self registration',
             'created_at' => $this->created_at?->toISOString(),
+            'last_action' => $this->latestActivity?->action,
+            'last_changed_by' => $this->latestActivity?->actor_name,
+            'last_changed_at' => $this->latestActivity?->created_at?->toISOString(),
         ];
     }
 }

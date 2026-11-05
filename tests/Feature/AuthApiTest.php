@@ -64,7 +64,7 @@ it('allows staff to log in and retrieve their shared account details', function 
         ->assertJsonPath('user.email', 'staff@example.com');
 });
 
-it('lets administrators create dynamic roles and assign module access to users', function (): void {
+it('lets administrators create dynamic roles by name and assign them to users', function (): void {
     $admin = User::factory()->create([
         'name' => 'Store Administrator',
         'email' => 'admin@example.com',
@@ -81,27 +81,28 @@ it('lets administrators create dynamic roles and assign module access to users',
         'password' => 'correct-password',
     ])->assertOk();
 
-    $this->getJson('/api/v1/admin/roles')
-        ->assertOk()
-        ->assertJsonFragment(['key' => 'overview.view', 'label' => 'Overview', 'required' => true]);
+    $this->getJson('/api/v1/admin/roles')->assertOk();
 
     $roleResponse = $this->postJson('/api/v1/admin/roles', [
         'name' => 'Warehouse Lead',
-        'permissions' => ['inventory.view'],
     ])->assertCreated()
         ->assertJsonPath('role.slug', 'warehouse_lead')
-        ->assertJsonPath('role.permissions.0', 'overview.view')
-        ->assertJsonPath('role.permissions.1', 'inventory.view')
+        ->assertJsonPath('role.name', 'Warehouse Lead')
         ->assertJsonPath('role.created_by', 'Store Administrator');
 
     expect($roleResponse->json('role.created_at'))->not->toBeNull();
+    expect($roleResponse->json('role.permissions'))->toBe(array_keys(\App\Models\Role::PERMISSIONS));
+
+    $this->putJson('/api/v1/admin/roles/warehouse_lead', [
+        'name' => 'Warehouse Manager',
+    ])->assertOk()
+        ->assertJsonPath('role.name', 'Warehouse Manager');
 
     $this->patchJson('/api/v1/admin/users/'.$customer->id.'/role', [
         'role' => 'warehouse_lead',
     ])->assertOk()
         ->assertJsonPath('user.role', 'warehouse_lead')
-        ->assertJsonPath('user.role_name', 'Warehouse Lead')
-        ->assertJsonPath('user.permissions.1', 'inventory.view');
+        ->assertJsonPath('user.role_name', 'Warehouse Manager');
 
     expect($customer->fresh()->role)->toBe('warehouse_lead');
 });
@@ -177,9 +178,23 @@ it('allows administrators to create, edit, block, unblock, and delete user accou
 
     $this->deleteJson('/api/v1/admin/users/'.$userId)
         ->assertOk()
-        ->assertJsonPath('message', 'User account deleted.');
+        ->assertJsonPath('message', 'User account deleted.')
+        ->assertJsonPath('activity.action', 'deleted')
+        ->assertJsonPath('activity.actor_name', 'Store Administrator');
 
     $this->assertDatabaseMissing('users', ['id' => $userId]);
+    $this->assertDatabaseHas('user_activity_logs', [
+        'action' => 'created',
+        'actor_name' => 'Store Administrator',
+        'subject_email' => 'new.staff@example.com',
+    ]);
+    $this->assertDatabaseHas('user_activity_logs', [
+        'action' => 'deleted',
+        'actor_name' => 'Store Administrator',
+        'subject_email' => 'updated.staff@example.com',
+        'subject_user_id' => null,
+    ]);
+    expect(\App\Models\UserActivityLog::query()->pluck('changes')->toJson())->not->toContain('temporary-password');
 });
 
 it('denies blocked staff accounts access to the admin panel', function (): void {
@@ -256,6 +271,10 @@ it('denies non-admin staff access to role management endpoints', function (): vo
     ])->assertOk();
 
     $this->getJson('/api/v1/admin/roles')->assertForbidden();
+    $this->postJson('/api/v1/admin/roles', [
+        'name' => 'Warehouse Lead',
+    ])->assertForbidden()
+        ->assertJsonPath('message', 'Only an administrator or super administrator can create and manage roles.');
 });
 
 it('allows super administrators to assign administrator roles', function (): void {
