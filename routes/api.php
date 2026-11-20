@@ -1,6 +1,9 @@
 <?php
 
+use App\Http\Controllers\Api\AdminBrandController;
 use App\Http\Controllers\Api\AdminCustomerController;
+use App\Http\Controllers\Api\AdminInventoryController;
+use App\Http\Controllers\Api\AdminReportController;
 use App\Http\Controllers\Api\AdminUserController;
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\RoleManagementController;
@@ -8,6 +11,10 @@ use App\Http\Controllers\Api\StoreCustomerController;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1')->group(function (): void {
+    Route::get('/brand-logos/{filename}', [AdminBrandController::class, 'showLogo'])
+        ->where('filename', '[A-Za-z0-9]{40}\.(png|jpe?g|webp)')
+        ->name('brand-logos.show');
+
     Route::prefix('auth')->group(function (): void {
         Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:5,1');
         Route::post('/login', [AuthController::class, 'login'])->middleware('throttle:5,1');
@@ -46,5 +53,29 @@ Route::prefix('v1')->group(function (): void {
         Route::put('/customers/{customer}', [AdminCustomerController::class, 'update']);
         Route::patch('/customers/{customer}/status', [AdminCustomerController::class, 'setStatus']);
         Route::delete('/customers/{customer}', [AdminCustomerController::class, 'destroy']);
+
+        Route::get('/reports/summary', [AdminReportController::class, 'summary']);
+
+        // ── Brands & Models ──────────────────────────────────────────────────
+        Route::get('/brands', [AdminBrandController::class, 'index']);
+        Route::post('/brands', [AdminBrandController::class, 'store']);
+        Route::put('/brands/{brand}', [AdminBrandController::class, 'update']);
+        Route::delete('/brands/{brand}', [AdminBrandController::class, 'destroy']);
+        Route::get('/brands/{brand}/models', [AdminBrandController::class, 'models']);
+        Route::post('/brands/{brand}/models', [AdminBrandController::class, 'storeModel']);
+        Route::put('/models/{model}', [AdminBrandController::class, 'updateModel']);
+        Route::delete('/models/{model}', [AdminBrandController::class, 'destroyModel']);
+
+        // ── Spare Parts Inventory ────────────────────────────────────────────
+        Route::get('/inventory', [AdminInventoryController::class, 'index']);
+        Route::post('/inventory/appliance-types', [AdminInventoryController::class, 'storeApplianceType']);
+        Route::put('/inventory/appliance-types/{applianceType}', [AdminInventoryController::class, 'updateApplianceType']);
+        Route::delete('/inventory/appliance-types/{applianceType}', [AdminInventoryController::class, 'destroyApplianceType']);
+        Route::post('/inventory/part-categories', [AdminInventoryController::class, 'storePartCategory']);
+        Route::post('/inventory', [AdminInventoryController::class, 'store']);
+        Route::get('/inventory/{part}', [AdminInventoryController::class, 'show']);
+        Route::put('/inventory/{part}', [AdminInventoryController::class, 'update']);
+        Route::patch('/inventory/{part}/stock', [AdminInventoryController::class, 'updateStock']);
+        Route::delete('/inventory/{part}', [AdminInventoryController::class, 'destroy']);
     });
 });
