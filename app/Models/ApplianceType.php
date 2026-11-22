@@ -13,6 +13,7 @@ class ApplianceType extends Model
         'name',
         'slug',
         'icon',
+        'image_url',
         'is_active',
         'sort_order',
     ];

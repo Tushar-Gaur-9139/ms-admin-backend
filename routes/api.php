@@ -14,6 +14,9 @@ Route::prefix('v1')->group(function (): void {
     Route::get('/brand-logos/{filename}', [AdminBrandController::class, 'showLogo'])
         ->where('filename', '[A-Za-z0-9]{40}\.(png|jpe?g|webp)')
         ->name('brand-logos.show');
+    Route::get('/catalog-images/{filename}', [AdminInventoryController::class, 'showCatalogImage'])
+        ->where('filename', '[A-Za-z0-9]{40}\.(png|jpe?g|webp)')
+        ->name('catalog-images.show');
 
     Route::prefix('auth')->group(function (): void {
         Route::post('/register', [AuthController::class, 'register'])->middleware('throttle:5,1');

@@ -18,6 +18,8 @@ use Illuminate\Validation\Rules\Exists;
 
 class AdminInventoryController extends Controller
 {
+    use SavesCatalogImages;
+
     // ─── Authorization ─────────────────────────────────────────────────────────
 
     private function authorizeRead(Request $request): User
@@ -121,7 +123,7 @@ class AdminInventoryController extends Controller
             'per_page' => $parts->perPage(),
             // Dropdown options for Add/Edit form
             'brands' => Brand::active()->with('applianceTypes:id,name')->orderBy('name')->get(['id', 'name', 'short_code']),
-            'appliance_types' => ApplianceType::active()->orderBy('sort_order')->get(['id', 'name', 'icon']),
+            'appliance_types' => ApplianceType::active()->orderBy('sort_order')->get(['id', 'name', 'icon', 'image_url']),
             'part_categories' => PartCategory::active()->orderBy('name')->get(['id', 'appliance_type_id', 'name']),
         ]);
     }
@@ -129,13 +131,43 @@ class AdminInventoryController extends Controller
     public function storeApplianceType(Request $request): JsonResponse
     {
         $this->authorizeWrite($request);
+        if ($request->filled('existing_product_id')) {
+            $data = $request->validate([
+                'existing_product_id' => ['required', 'integer', Rule::exists('appliance_types', 'id')->where('is_active', true)],
+                'brand_id' => ['required', 'integer', Rule::exists('brands', 'id')->where('is_active', true)],
+            ]);
+            $product = DB::transaction(function () use ($data): ApplianceType {
+                $brand = Brand::active()->lockForUpdate()->findOrFail($data['brand_id']);
+                $product = ApplianceType::active()->findOrFail($data['existing_product_id']);
+                $brand->applianceTypes()->syncWithoutDetaching([$product->id]);
+
+                return $product;
+            });
+
+            return response()->json(['appliance_type' => $product]);
+        }
+
         $data = $request->validate([
             'name' => ['required', 'string', 'max:100', 'unique:appliance_types,name'],
+            'brand_id' => ['sometimes', 'required', 'integer', Rule::exists('brands', 'id')->where('is_active', true)],
+            'image' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
         ]);
         $request->merge(['slug' => Str::slug($data['name'])]);
         $data += $request->validate(['slug' => ['required', 'max:120', 'unique:appliance_types,slug']]);
 
-        return response()->json(['appliance_type' => ApplianceType::create($data)], 201);
+        $product = $this->saveCatalogImage($data, function (array $fields): ApplianceType {
+            $brandId = $fields['brand_id'] ?? null;
+            unset($fields['brand_id']);
+            $product = ApplianceType::create($fields);
+
+            if ($brandId !== null) {
+                Brand::active()->findOrFail($brandId)->applianceTypes()->attach($product->id);
+            }
+
+            return $product;
+        });
+
+        return response()->json(['appliance_type' => $product], 201);
     }
 
     public function storePartCategory(Request $request): JsonResponse
@@ -156,8 +188,13 @@ class AdminInventoryController extends Controller
         $this->authorizeWrite($request);
         $data = $request->validate([
             'name' => ['required', 'string', 'max:100', Rule::unique('appliance_types')->ignore($applianceType)],
+            'image' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
         ]);
-        $applianceType->update($data);
+        $this->saveCatalogImage($data, function (array $fields) use ($applianceType): ApplianceType {
+            $applianceType->update($fields);
+
+            return $applianceType;
+        });
 
         return response()->json(['appliance_type' => $applianceType]);
     }

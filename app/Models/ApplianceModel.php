@@ -15,6 +15,10 @@ class ApplianceModel extends Model
         'model_name',
         'series_year',
         'serial_prefix',
+        'serial_number',
+        'image_url',
+        'purchase_price',
+        'sale_price',
         'serial_range_start',
         'serial_range_end',
         'is_active',
@@ -22,6 +26,8 @@ class ApplianceModel extends Model
 
     protected $casts = [
         'is_active' => 'boolean',
+        'purchase_price' => 'decimal:2',
+        'sale_price' => 'decimal:2',
     ];
 
     public function brand(): BelongsTo

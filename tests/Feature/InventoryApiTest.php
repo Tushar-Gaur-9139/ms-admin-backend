@@ -95,6 +95,7 @@ it('saves inventory classifications and rejects models from another company', fu
     $otherBrandId = $this->postJson('/api/v1/admin/brands', [
         'name' => 'Other Appliances',
         'short_code' => 'OTHER',
+        'appliance_type_ids' => [$typeId],
     ])->assertCreated()->json('brand.id');
 
     $model = ['model_number' => 'RF100', 'appliance_type_id' => $typeId];
@@ -102,6 +103,20 @@ it('saves inventory classifications and rejects models from another company', fu
         ->assertCreated()->json('model.id');
     $otherModelId = $this->postJson("/api/v1/admin/brands/{$otherBrandId}/models", $model)
         ->assertCreated()->json('model.id');
+
+    $this->putJson("/api/v1/admin/models/{$modelId}", [
+        'serial_number' => 'RF100-001',
+        'purchase_price' => 1200,
+        'sale_price' => 1500,
+    ])->assertOk()->assertJsonPath('model.purchase_price', '1200.00');
+
+    $this->getJson("/api/v1/admin/brands/{$brandId}/models?for_order=1&appliance_type_id={$typeId}")
+        ->assertOk()
+        ->assertJsonCount(1, 'models')
+        ->assertJsonPath('models.0.id', $modelId)
+        ->assertJsonPath('models.0.serial_number', 'RF100-001')
+        ->assertJsonPath('models.0.sale_price', '1500.00')
+        ->assertJsonMissingPath('models.0.purchase_price');
 
     $part = [
         'name' => 'Compressor',
@@ -122,4 +137,20 @@ it('saves inventory classifications and rejects models from another company', fu
         ->assertJsonPath('appliance_types.0.id', $typeId)
         ->assertJsonPath('part_categories.0.id', $categoryId)
         ->assertJsonPath('parts.0.compatible_models.0.model_number', 'RF100');
+
+    $exclusiveProductId = $this->postJson('/api/v1/admin/inventory/appliance-types', [
+        'name' => 'Exclusive product',
+        'brand_id' => $brandId,
+    ])->assertCreated()->json('appliance_type.id');
+
+    $this->deleteJson("/api/v1/admin/brands/{$brandId}")->assertOk();
+    $this->assertDatabaseMissing('brands', ['id' => $brandId]);
+    $this->assertDatabaseMissing('brand_appliances', ['brand_id' => $brandId]);
+    $this->assertDatabaseMissing('appliance_models', ['id' => $modelId]);
+    $this->assertDatabaseMissing('spare_parts', ['brand_id' => $brandId]);
+    $this->assertDatabaseMissing('spare_part_model_compatibilities', ['appliance_model_id' => $modelId]);
+    $this->assertDatabaseMissing('appliance_types', ['id' => $exclusiveProductId]);
+    $this->assertDatabaseHas('brand_appliances', ['brand_id' => $otherBrandId, 'appliance_type_id' => $typeId]);
+    $this->assertDatabaseHas('appliance_types', ['id' => $typeId]);
+    $this->assertDatabaseHas('appliance_models', ['id' => $otherModelId]);
 });

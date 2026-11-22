@@ -6,6 +6,7 @@ use App\Http\Controllers\Controller;
 use App\Models\ApplianceModel;
 use App\Models\ApplianceType;
 use App\Models\Brand;
+use App\Models\SparePart;
 use App\Models\User;
 use Closure;
 use Illuminate\Http\JsonResponse;
@@ -19,9 +20,11 @@ use Throwable;
 
 class AdminBrandController extends Controller
 {
+    use SavesCatalogImages;
+
     // ─── Authorization ─────────────────────────────────────────────────────────
 
-    private function authorizeRead(Request $request): User
+    private function authorizeRead(Request $request, bool $allowOrders = false): User
     {
         $user = $request->user();
         abort_unless(
@@ -33,7 +36,8 @@ class AdminBrandController extends Controller
             $user->isSuperAdmin()
                 || $user->role === 'admin'
                 || in_array('products.view', $user->permissionKeys(), true)
-                || in_array('inventory.view', $user->permissionKeys(), true),
+                || in_array('inventory.view', $user->permissionKeys(), true)
+                || ($allowOrders && in_array('orders.view', $user->permissionKeys(), true)),
             403,
             'You do not have permission to view brands.'
         );
@@ -62,9 +66,9 @@ class AdminBrandController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $this->authorizeRead($request);
+        $this->authorizeRead($request, allowOrders: true);
 
-        $brands = Brand::with(['applianceTypes:id,name,slug,icon'])
+        $brands = Brand::with(['applianceTypes:id,name,slug,icon,image_url,is_active'])
             ->withCount(['applianceModels', 'spareParts'])
             ->orderBy('sort_order')
             ->orderBy('name')
@@ -208,35 +212,80 @@ class AdminBrandController extends Controller
     {
         $this->authorizeWrite($request);
 
-        if ($brand->spareParts()->exists()) {
-            return response()->json([
-                'message' => 'Cannot delete brand: it has spare parts linked to it. Remove or reassign spare parts first.',
-            ], 422);
+        DB::transaction(function () use ($brand): void {
+            $company = Brand::query()->lockForUpdate()->findOrFail($brand->id);
+            $models = $company->applianceModels()->get(['id', 'appliance_type_id', 'image_url']);
+            $parts = $company->spareParts()->get(['id', 'appliance_type_id', 'image_url']);
+            $productIds = $company->applianceTypes()->pluck('appliance_types.id')
+                ->concat($models->pluck('appliance_type_id'))
+                ->concat($parts->pluck('appliance_type_id'))
+                ->unique();
+            $products = ApplianceType::query()->whereKey($productIds->all())->orderBy('id')->lockForUpdate()->get();
+
+            $company->spareParts()->delete();
+            $company->delete();
+
+            $images = $models->pluck('image_url')->concat($parts->pluck('image_url'))->push($company->logo_url);
+            foreach ($products as $product) {
+                if ($product->brands()->lockForUpdate()->first() || $product->applianceModels()->lockForUpdate()->first()
+                    || $product->spareParts()->lockForUpdate()->first() || $product->partCategories()->has('spareParts')->lockForUpdate()->first()) {
+                    continue;
+                }
+
+                $images->push($product->image_url);
+                $product->partCategories()->delete();
+                $product->delete();
+            }
+
+            DB::afterCommit(function () use ($images): void {
+                foreach ($images->filter()->unique() as $image) {
+                    $this->removeUnusedCompanyImage($image);
+                }
+            });
+        }, 3);
+
+        return response()->json(['message' => 'Company and its inventory deleted successfully.']);
+    }
+
+    private function removeUnusedCompanyImage(string $url): void
+    {
+        if (! preg_match('~^/api/v1/(brand-logos|catalog-images)/[A-Za-z0-9]{40}\.(png|jpe?g|webp)$~D', $url)) {
+            return;
         }
 
-        // Remove models and pivot records first
-        $brand->applianceModels()->delete();
-        $brand->applianceTypes()->detach();
-        $brand->delete();
+        try {
+            if (Brand::where('logo_url', $url)->exists() || ApplianceType::where('image_url', $url)->exists()
+                || ApplianceModel::where('image_url', $url)->exists() || SparePart::where('image_url', $url)->exists()) {
+                return;
+            }
 
-        return response()->json(['message' => 'Brand deleted successfully.']);
+            Storage::disk('public')->delete(Str::after($url, '/api/v1/'));
+        } catch (Throwable $failure) {
+            report($failure);
+        }
     }
 
     // ─── Appliance Models ──────────────────────────────────────────────────────
 
     public function models(Request $request, Brand $brand): JsonResponse
     {
-        $this->authorizeRead($request);
+        $forOrder = $request->boolean('for_order');
+        $this->authorizeRead($request, allowOrders: $forOrder);
 
         $query = ApplianceModel::where('brand_id', $brand->id)
             ->with('applianceType:id,name,slug,icon');
 
-        if ($request->filled('appliance_type_id')) {
+        if ($forOrder) {
+            $request->validate(['appliance_type_id' => ['required', 'integer']]);
+            $productId = $request->integer('appliance_type_id');
+            abort_unless($brand->is_active && $brand->applianceTypes()->whereKey($productId)->where('appliance_types.is_active', true)->exists(), 404);
+            $query->where('appliance_type_id', $productId)->active();
+        } elseif ($request->filled('appliance_type_id')) {
             $query->where('appliance_type_id', (int) $request->query('appliance_type_id'));
         }
 
         $models = $query->orderBy('appliance_type_id')->orderBy('model_number')->get()
-            ->map(fn (ApplianceModel $m) => $this->formatModel($m));
+            ->map(fn (ApplianceModel $m) => $this->formatModel($m, includePurchasePrice: ! $forOrder));
 
         return response()->json([
             'brand' => ['id' => $brand->id, 'name' => $brand->name, 'short_code' => $brand->short_code],
@@ -250,13 +299,17 @@ class AdminBrandController extends Controller
         $this->authorizeWrite($request);
 
         $data = $request->validate([
-            'appliance_type_id' => ['required', 'integer', 'exists:appliance_types,id'],
+            'appliance_type_id' => ['required', 'integer', Rule::exists('brand_appliances')->where('brand_id', $brand->id)],
             'model_number' => ['required', 'string', 'max:100'],
             'model_name' => ['nullable', 'string', 'max:200'],
             'series_year' => ['nullable', 'string', 'max:20'],
             'serial_prefix' => ['nullable', 'string', 'max:30'],
             'serial_range_start' => ['nullable', 'string', 'max:50'],
             'serial_range_end' => ['nullable', 'string', 'max:50'],
+            'serial_number' => ['nullable', 'string', 'max:100'],
+            'purchase_price' => ['nullable', 'numeric', 'min:0', 'max:9999999999.99', 'decimal:0,2'],
+            'sale_price' => ['nullable', 'numeric', 'min:0', 'max:9999999999.99', 'decimal:0,2'],
+            'image' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
             'is_active' => ['boolean'],
         ]);
 
@@ -272,7 +325,7 @@ class AdminBrandController extends Controller
             ], 422);
         }
 
-        $model = ApplianceModel::create(array_merge($data, ['brand_id' => $brand->id]));
+        $model = $this->saveCatalogImage($data, fn (array $fields): ApplianceModel => ApplianceModel::create([...$fields, 'brand_id' => $brand->id]));
         $model->load('applianceType:id,name,slug,icon');
 
         return response()->json([
@@ -286,13 +339,17 @@ class AdminBrandController extends Controller
         $this->authorizeWrite($request);
 
         $data = $request->validate([
-            'appliance_type_id' => ['sometimes', 'integer', 'exists:appliance_types,id'],
+            'appliance_type_id' => ['sometimes', 'integer', Rule::exists('brand_appliances')->where('brand_id', $model->brand_id)],
             'model_number' => ['sometimes', 'string', 'max:100'],
             'model_name' => ['nullable', 'string', 'max:200'],
             'series_year' => ['nullable', 'string', 'max:20'],
             'serial_prefix' => ['nullable', 'string', 'max:30'],
             'serial_range_start' => ['nullable', 'string', 'max:50'],
             'serial_range_end' => ['nullable', 'string', 'max:50'],
+            'serial_number' => ['nullable', 'string', 'max:100'],
+            'purchase_price' => ['nullable', 'numeric', 'min:0', 'max:9999999999.99', 'decimal:0,2'],
+            'sale_price' => ['nullable', 'numeric', 'min:0', 'max:9999999999.99', 'decimal:0,2'],
+            'image' => ['nullable', 'image', 'mimes:jpg,jpeg,png,webp', 'max:2048'],
             'is_active' => ['boolean'],
         ]);
 
@@ -310,7 +367,11 @@ class AdminBrandController extends Controller
             }
         }
 
-        $model->update($data);
+        $this->saveCatalogImage($data, function (array $fields) use ($model): ApplianceModel {
+            $model->update($fields);
+
+            return $model;
+        });
         $model->load('applianceType:id,name,slug,icon');
 
         return response()->json([
@@ -354,7 +415,7 @@ class AdminBrandController extends Controller
         ];
     }
 
-    private function formatModel(ApplianceModel $m): array
+    private function formatModel(ApplianceModel $m, bool $includePurchasePrice = true): array
     {
         return [
             'id' => $m->id,
@@ -367,6 +428,10 @@ class AdminBrandController extends Controller
             'serial_prefix' => $m->serial_prefix,
             'serial_range_start' => $m->serial_range_start,
             'serial_range_end' => $m->serial_range_end,
+            'serial_number' => $m->serial_number,
+            'image_url' => $m->image_url,
+            'sale_price' => $m->sale_price,
+            ...($includePurchasePrice ? ['purchase_price' => $m->purchase_price] : []),
             'is_active' => $m->is_active,
             'created_at' => $m->created_at?->toDateString(),
         ];
